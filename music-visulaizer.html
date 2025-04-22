@@ -2,49 +2,31 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>3D Music Visualizer</title>
   <style>
     body { margin: 0; overflow: hidden; background: black; }
     canvas { display: block; }
-    #audioFile { position: absolute; z-index: 1; margin: 20px; }
+    #audio-upload {
+      position: absolute;
+      z-index: 10;
+      top: 10px;
+      left: 10px;
+    }
   </style>
 </head>
 <body>
-  <input type="file" id="audioFile" accept="audio/*" />
+  <input type="file" id="audio-upload" accept="audio/*">
   <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
   <script>
-    let scene, camera, renderer, bars = [];
-    let analyser, dataArray;
+    let scene, camera, renderer, analyser, dataArray, audioSource;
+    let melodyLine, bassPlane, drumCubes = [], chordSpheres = [];
 
-    const fileInput = document.getElementById('audioFile');
-    fileInput.onchange = () => {
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      const reader = new FileReader();
-      const file = fileInput.files[0];
+    init();
 
-      reader.onload = e => {
-        audioContext.decodeAudioData(e.target.result, buffer => {
-          const source = audioContext.createBufferSource();
-          source.buffer = buffer;
-
-          analyser = audioContext.createAnalyser();
-          analyser.fftSize = 128;
-          const bufferLength = analyser.frequencyBinCount;
-          dataArray = new Uint8Array(bufferLength);
-
-          source.connect(analyser);
-          analyser.connect(audioContext.destination);
-          source.start();
-
-          initThree(bufferLength);
-          animate();
-        });
-      };
-      reader.readAsArrayBuffer(file);
-    };
-
-    function initThree(barCount) {
+    function init() {
       scene = new THREE.Scene();
+
       camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
       camera.position.z = 50;
 
@@ -52,49 +34,115 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
       document.body.appendChild(renderer.domElement);
 
-      const geometry = new THREE.BoxGeometry(1, 1, 1);
-      const material = new THREE.MeshStandardMaterial({ color: 0x00ffcc });
-      const radius = 20;
+      // Melody Line
+      const melodyGeometry = new THREE.BufferGeometry();
+      const points = [];
+      for (let i = 0; i < 100; i++) points.push(new THREE.Vector3(i - 50, 0, 0));
+      melodyGeometry.setFromPoints(points);
+      const melodyMaterial = new THREE.LineBasicMaterial({ color: 0x00ffff });
+      melodyLine = new THREE.Line(melodyGeometry, melodyMaterial);
+      scene.add(melodyLine);
 
-      for (let i = 0; i < barCount; i++) {
-        const bar = new THREE.Mesh(geometry, material.clone());
-        const angle = (i / barCount) * Math.PI * 2;
-        bar.position.set(Math.cos(angle) * radius, Math.sin(angle) * radius, 0);
-        bar.lookAt(0, 0, 0);
-        scene.add(bar);
-        bars.push(bar);
+      // Bass Plane
+      const bassGeometry = new THREE.PlaneGeometry(100, 100, 32, 32);
+      const bassMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true });
+      bassPlane = new THREE.Mesh(bassGeometry, bassMaterial);
+      bassPlane.rotation.x = -Math.PI / 2;
+      bassPlane.position.y = -30;
+      scene.add(bassPlane);
+
+      // Drum Cubes
+      for (let i = 0; i < 16; i++) {
+        const cube = new THREE.Mesh(
+          new THREE.BoxGeometry(2, 2, 2),
+          new THREE.MeshStandardMaterial({ color: 0xff0000 })
+        );
+        cube.position.x = i * 3 - 24;
+        cube.position.y = -10;
+        drumCubes.push(cube);
+        scene.add(cube);
       }
 
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
-      scene.add(ambientLight);
+      // Chord Spheres
+      for (let i = 0; i < 4; i++) {
+        const sphere = new THREE.Mesh(
+          new THREE.SphereGeometry(4, 32, 32),
+          new THREE.MeshStandardMaterial({ color: 0xffff00 })
+        );
+        sphere.position.set(Math.cos(i * Math.PI/2) * 20, 10, Math.sin(i * Math.PI/2) * 20);
+        chordSpheres.push(sphere);
+        scene.add(sphere);
+      }
 
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+      scene.add(ambientLight);
       const pointLight = new THREE.PointLight(0xffffff, 1);
-      pointLight.position.set(0, 0, 50);
+      pointLight.position.set(0, 50, 50);
       scene.add(pointLight);
 
-      window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
+      animate();
+    }
+
+    function setupAudio(audio) {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioSource = audioCtx.createMediaElementSource(audio);
+      analyser = audioCtx.createAnalyser();
+      audioSource.connect(analyser);
+      analyser.connect(audioCtx.destination);
+      analyser.fftSize = 256;
+      const bufferLength = analyser.frequencyBinCount;
+      dataArray = new Uint8Array(bufferLength);
+    }
+
+    function updateVisuals() {
+      if (!analyser) return;
+      analyser.getByteFrequencyData(dataArray);
+
+      const bass = dataArray.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
+      const drums = dataArray.slice(10, 40).reduce((a, b) => a + b, 0) / 30;
+      const melody = dataArray.slice(40, 80).reduce((a, b) => a + b, 0) / 40;
+      const chords = dataArray.slice(80, 128).reduce((a, b) => a + b, 0) / 48;
+
+      // Melody line animation
+      const positions = melodyLine.geometry.attributes.position.array;
+      for (let i = 0; i < positions.length; i += 3) {
+        positions[i + 1] = Math.sin(i / 5 + performance.now() / 200) * melody / 20;
+      }
+      melodyLine.geometry.attributes.position.needsUpdate = true;
+
+      // Bass plane animation
+      const bassVerts = bassPlane.geometry.attributes.position.array;
+      for (let i = 0; i < bassVerts.length; i += 3) {
+        bassVerts[i + 2] = Math.sin(i / 2 + performance.now() / 300) * bass / 30;
+      }
+      bassPlane.geometry.attributes.position.needsUpdate = true;
+
+      // Drum cubes bounce
+      drumCubes.forEach((cube, i) => {
+        cube.scale.y = 1 + (dataArray[i] / 128);
+      });
+
+      // Chord spheres pulse
+      chordSpheres.forEach(sphere => {
+        const scale = 1 + (chords / 100);
+        sphere.scale.set(scale, scale, scale);
       });
     }
 
     function animate() {
       requestAnimationFrame(animate);
-      if (analyser && dataArray) {
-        analyser.getByteFrequencyData(dataArray);
-        bars.forEach((bar, i) => {
-          const scale = dataArray[i] / 20;
-          bar.scale.y = Math.max(scale, 0.1);
-          bar.material.color.setHSL(i / bars.length, 1, 0.5);
-        });
-      }
-
-      scene.rotation.z += 0.001;
-      scene.rotation.y += 0.002;
-
+      updateVisuals();
       renderer.render(scene, camera);
     }
+
+    document.getElementById('audio-upload').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      const audio = new Audio(URL.createObjectURL(file));
+      audio.crossOrigin = "anonymous";
+      audio.loop = true;
+      audio.play();
+      setupAudio(audio);
+    });
   </script>
 </body>
 </html>
